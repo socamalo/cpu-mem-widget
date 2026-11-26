@@ -22,7 +22,7 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWM_BB_BLURREGION, DWM_BB_ENABLE, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMNCRP_DISABLED, DWMWCP_DONOTROUND,
 };
-use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
+use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, DeleteObject};
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::GetSystemTimes;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
@@ -60,7 +60,7 @@ const SAVE_EVERY: Duration = Duration::from_secs(5);
 /// Card fill. 96 % opaque: enough translucency to feel like it floats, not
 /// enough for text underneath to ghost through. Drop the alpha toward 200 for
 /// a glass look, raise to 255 for solid.
-const BG: Color32 = Color32::from_rgba_premultiplied(13, 13, 15, 246);
+const BG: Color32 = Color32::from_rgba_premultiplied(13, 13, 15, 252);
 const LABEL_FG: Color32 = Color32::from_rgb(150, 152, 162);
 const HAIRLINE: Color32 = Color32::from_rgba_premultiplied(4, 4, 4, 14);
 
@@ -306,11 +306,16 @@ fn strip_nc_area(hwnd: HWND) {
 ///   viewport options, hence the caller repeats this for a few frames.
 fn dress_window(hwnd: HWND) {
     unsafe {
-        // Per-pixel alpha needs DWM blur-behind, but the usual "whole window"
-        // region also makes Windows outline the window with a 1 px frame that
-        // shows as a hard line wherever the rounded card leaves the edge bare.
-        // An empty blur region keeps the alpha composition without the frame.
-        let rgn = CreateRectRgn(0, 0, 0, 0);
+        // Per-pixel alpha needs DWM blur-behind, but the glass layer it installs
+        // is a 32 % black sheet over the whole window rect: invisible under the
+        // card, plainly visible in the four corner cut-outs. Handing DWM a blur
+        // region shaped exactly like the card keeps the glass under the card and
+        // leaves the corners genuinely transparent.
+        let radius = (CORNER * dpi_scale()).round() as i32;
+        let rgn = match window_rect(hwnd) {
+            Some(r) => CreateRoundRectRgn(0, 0, r.right - r.left + 1, r.bottom - r.top + 1, radius * 2, radius * 2),
+            None => CreateRectRgn(0, 0, 0, 0),
+        };
         let mut bb: DWM_BLURBEHIND = std::mem::zeroed();
         bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
         bb.fEnable = 1;
@@ -392,6 +397,7 @@ struct Widget {
     saved: Option<(i32, i32, i32, i32)>,
     hwnd: isize,
     dress_left: u8,
+    glass: (i32, i32),
     resizing: bool,
     rs_right: i32,
     rs_top: i32,
@@ -415,6 +421,7 @@ impl Widget {
             saved: None,
             hwnd: 0,
             dress_left: 8,
+            glass: (0, 0),
             resizing: false,
             rs_right: 0,
             rs_top: 0,
@@ -579,6 +586,9 @@ impl eframe::App for Widget {
         let hwnd = self.hwnd();
 
         if let Some(hwnd) = hwnd {
+            let size = window_rect(hwnd)
+                .map(|r| (r.right - r.left, r.bottom - r.top))
+                .unwrap_or_default();
             if self.dress_left > 0 {
                 dress_window(hwnd);
                 if self.dress_left == 8 {
@@ -590,11 +600,18 @@ impl eframe::App for Widget {
                 }
                 ensure_on_screen(hwnd);
                 strip_nc_area(hwnd);
+                self.glass = size;
                 self.dress_left -= 1;
+            } else if size.0 > 0 && size != self.glass {
+                // The glass region follows the card's outline, so it has to be
+                // rebuilt whenever the widget is resized.
+                self.glass = size;
+                dress_window(hwnd);
             }
             if self.last_save.elapsed() >= SAVE_EVERY {
                 self.last_save = Instant::now();
                 if let Some(wr) = window_rect(hwnd) {
+                    ensure_on_screen(hwnd);
                     let now = (wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top);
                     if self.saved != Some(now) {
                         self.saved = Some(now);
@@ -782,7 +799,6 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport,
-        persist_window: false,
         ..Default::default()
     };
 
@@ -791,6 +807,9 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            // Keep the font atlas small: this widget only ever draws ~8 glyphs.
+            cc.egui_ctx
+                .options_mut(|o| o.reduce_texture_memory = true);
             Ok(Box::new(Widget::new()))
         }),
     )

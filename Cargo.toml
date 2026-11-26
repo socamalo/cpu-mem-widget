@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "cpu-mem-widget"
 version = "0.1.0"
 edition = "2021"
@@ -8,7 +8,6 @@ description = "Minimal always-on-top CPU / memory histogram widget"
 eframe = { version = "0.37", default-features = false, features = [
     "glow",
     "default_fonts",
-    "persistence",
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -16,8 +15,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
-    "Win32_UI_Controls",
-    "Win32_UI_HiDpi",
+        "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
